@@ -78,33 +78,50 @@ if uploaded_pdf is not None:
             unidentified_pages = []
             last_valid_sku = None
             
-            # Read PDF bytes
+            # Read PDF bytes once
             pdf_bytes = uploaded_pdf.read()
             pdf_stream = io.BytesIO(pdf_bytes)
             
-            # Extract SKUs from each page
+            # Extract SKUs from each page with optimizations
             with pdfplumber.open(pdf_stream) as pdf:
                 total_pages = len(pdf.pages)
                 st.info(f"📄 Processing {total_pages} pages...")
                 
+                # Create a progress bar for better UX
+                progress_bar = st.progress(0)
+                
                 for i, page in enumerate(pdf.pages):
-                    words = page.extract_words()
-                    sku_candidates = [
-                        word['text'] for word in words
-                        if sku_bbox[0] <= word['x0'] <= sku_bbox[2] and
-                           sku_bbox[1] <= word['top'] <= sku_bbox[3]
-                    ]
+                    # Update progress
+                    progress_bar.progress((i + 1) / total_pages)
                     
-                    if sku_candidates and len(sku_candidates[0]) >= 4:
-                        sku = sku_candidates[0]
-                        sku_to_pages[sku].append(i)
-                        last_valid_sku = sku
+                    # Crop to SKU area first to reduce processing
+                    sku_area = page.crop(sku_bbox)
+                    
+                    # Extract text only from the cropped area
+                    sku_text = sku_area.extract_text()
+                    
+                    if sku_text and sku_text.strip():
+                        # Split by whitespace and take first valid token
+                        tokens = sku_text.strip().split()
+                        if tokens and len(tokens[0]) >= 4:
+                            sku = tokens[0]
+                            sku_to_pages[sku].append(i)
+                            last_valid_sku = sku
+                        else:
+                            # Fallback to last valid SKU
+                            if last_valid_sku:
+                                sku_to_pages[last_valid_sku].append(i)
+                            else:
+                                unidentified_pages.append(i)
                     else:
-                        # If no SKU found, append to last valid SKU or mark as unidentified
+                        # No text found, use last valid SKU or mark unidentified
                         if last_valid_sku:
                             sku_to_pages[last_valid_sku].append(i)
                         else:
                             unidentified_pages.append(i)
+                
+                # Clear progress bar
+                progress_bar.empty()
             
             # Show processing results
             st.success("✅ SKU extraction completed!")
@@ -122,16 +139,26 @@ if uploaded_pdf is not None:
             reader = PdfReader(pdf_stream)
             output_zip = io.BytesIO()
             
-            with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED) as zipf:
+            # Create progress bar for PDF generation
+            pdf_progress = st.progress(0)
+            total_operations = len(sku_to_pages) + (1 if unidentified_pages else 0)
+            current_operation = 0
+            
+            with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zipf:
                 # Create PDF for each SKU
                 for sku, page_indices in sku_to_pages.items():
                     writer = PdfWriter()
+                    
+                    # Add pages in batch
                     for idx in page_indices:
                         writer.add_page(reader.pages[idx])
                     
                     buffer = io.BytesIO()
                     writer.write(buffer)
                     zipf.writestr(f"{sku}.pdf", buffer.getvalue())
+                    
+                    current_operation += 1
+                    pdf_progress.progress(current_operation / total_operations)
                 
                 # Create PDF for unidentified pages if any
                 if unidentified_pages:
@@ -142,6 +169,12 @@ if uploaded_pdf is not None:
                     buffer = io.BytesIO()
                     writer.write(buffer)
                     zipf.writestr("unidentified_pages.pdf", buffer.getvalue())
+                    
+                    current_operation += 1
+                    pdf_progress.progress(current_operation / total_operations)
+            
+            # Clear progress bar
+            pdf_progress.empty()
             
             # Download button
             st.download_button(
