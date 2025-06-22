@@ -4,6 +4,7 @@ from PyPDF2 import PdfReader, PdfWriter
 from collections import defaultdict
 import io
 import zipfile
+import time
 
 # Page configuration
 st.set_page_config(
@@ -68,132 +69,144 @@ if uploaded_pdf is not None:
     st.markdown(f"**File size:** {uploaded_pdf.size / 1024:.1f} KB")
     
     # Processing section
-    with st.spinner("🔄 Processing PDF and extracting SKUs..."):
-        try:
-            # SKU bounding box coordinates (adjust if needed)
-            sku_bbox = (17, 327, 73, 342)  # (x0, top, x1, bottom)
-            
-            # Initialize data structures
-            sku_to_pages = defaultdict(list)
-            unidentified_pages = []
-            last_valid_sku = None
-            
-            # Read PDF bytes once
-            pdf_bytes = uploaded_pdf.read()
-            pdf_stream = io.BytesIO(pdf_bytes)
-            
-            # Extract SKUs from each page with optimizations
-            with pdfplumber.open(pdf_stream) as pdf:
-                total_pages = len(pdf.pages)
-                st.info(f"📄 Processing {total_pages} pages...")
+    try:
+        # SKU bounding box coordinates (adjust if needed)
+        sku_bbox = (17, 327, 73, 342)  # (x0, top, x1, bottom)
+        
+        # Initialize data structures
+        sku_to_pages = defaultdict(list)
+        unidentified_pages = []
+        last_valid_sku = None
+        
+        # Read PDF bytes
+        pdf_bytes = uploaded_pdf.read()
+        pdf_stream = io.BytesIO(pdf_bytes)
+        
+        # First, get total pages for progress calculation
+        with pdfplumber.open(pdf_stream) as pdf:
+            total_pages = len(pdf.pages)
+        
+        st.info(f"📄 Processing {total_pages} pages...")
+        
+        # Create progress bar and status text
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Extract SKUs from each page with progress tracking
+        pdf_stream.seek(0)  # Reset stream
+        with pdfplumber.open(pdf_stream) as pdf:
+            for i, page in enumerate(pdf.pages):
+                # Update progress
+                progress = (i + 1) / total_pages
+                progress_bar.progress(progress)
+                status_text.text(f"Processing page {i + 1} of {total_pages}...")
                 
-                # Create a progress bar for better UX
-                progress_bar = st.progress(0)
+                words = page.extract_words()
+                sku_candidates = [
+                    word['text'] for word in words
+                    if sku_bbox[0] <= word['x0'] <= sku_bbox[2] and
+                       sku_bbox[1] <= word['top'] <= sku_bbox[3]
+                ]
                 
-                for i, page in enumerate(pdf.pages):
-                    # Update progress
-                    progress_bar.progress((i + 1) / total_pages)
-                    
-                    # Crop to SKU area first to reduce processing
-                    sku_area = page.crop(sku_bbox)
-                    
-                    # Extract text only from the cropped area
-                    sku_text = sku_area.extract_text()
-                    
-                    if sku_text and sku_text.strip():
-                        # Split by whitespace and take first valid token
-                        tokens = sku_text.strip().split()
-                        if tokens and len(tokens[0]) >= 4:
-                            sku = tokens[0]
-                            sku_to_pages[sku].append(i)
-                            last_valid_sku = sku
-                        else:
-                            # Fallback to last valid SKU
-                            if last_valid_sku:
-                                sku_to_pages[last_valid_sku].append(i)
-                            else:
-                                unidentified_pages.append(i)
+                if sku_candidates and len(sku_candidates[0]) >= 4:
+                    sku = sku_candidates[0]
+                    sku_to_pages[sku].append(i)
+                    last_valid_sku = sku
+                else:
+                    # If no SKU found, append to last valid SKU or mark as unidentified
+                    if last_valid_sku:
+                        sku_to_pages[last_valid_sku].append(i)
                     else:
-                        # No text found, use last valid SKU or mark unidentified
-                        if last_valid_sku:
-                            sku_to_pages[last_valid_sku].append(i)
-                        else:
-                            unidentified_pages.append(i)
+                        unidentified_pages.append(i)
                 
-                # Clear progress bar
-                progress_bar.empty()
-            
-            # Show processing results
-            st.success("✅ SKU extraction completed!")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("SKUs Found", len(sku_to_pages))
-            with col2:
-                st.metric("Unidentified Pages", len(unidentified_pages))
-            
-            # Create ZIP file with split PDFs
-            st.subheader("📥 Download Split PDFs")
-            
-            pdf_stream.seek(0)  # Reset stream position
-            reader = PdfReader(pdf_stream)
-            output_zip = io.BytesIO()
-            
-            # Create progress bar for PDF generation
-            pdf_progress = st.progress(0)
-            total_operations = len(sku_to_pages) + (1 if unidentified_pages else 0)
-            current_operation = 0
-            
-            with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zipf:
-                # Create PDF for each SKU
-                for sku, page_indices in sku_to_pages.items():
-                    writer = PdfWriter()
-                    
-                    # Add pages in batch
-                    for idx in page_indices:
-                        writer.add_page(reader.pages[idx])
-                    
-                    buffer = io.BytesIO()
-                    writer.write(buffer)
-                    zipf.writestr(f"{sku}.pdf", buffer.getvalue())
-                    
-                    current_operation += 1
-                    pdf_progress.progress(current_operation / total_operations)
+                # Small delay to make progress visible (remove in production if needed)
+                time.sleep(0.01)
+        
+        # Complete the progress bar
+        progress_bar.progress(1.0)
+        status_text.text("✅ SKU extraction completed!")
+        
+        # Show processing results
+        st.success("✅ SKU extraction completed!")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("SKUs Found", len(sku_to_pages))
+        with col2:
+            st.metric("Unidentified Pages", len(unidentified_pages))
+        
+        # Create ZIP file with split PDFs
+        st.subheader("📥 Download Split PDFs")
+        
+        # Create progress bar for PDF creation
+        pdf_progress_bar = st.progress(0)
+        pdf_status_text = st.empty()
+        
+        pdf_stream.seek(0)  # Reset stream position
+        reader = PdfReader(pdf_stream)
+        output_zip = io.BytesIO()
+        
+        total_operations = len(sku_to_pages) + (1 if unidentified_pages else 0)
+        current_operation = 0
+        
+        with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED) as zipf:
+            # Create PDF for each SKU
+            for sku, page_indices in sku_to_pages.items():
+                current_operation += 1
+                pdf_progress = current_operation / total_operations
+                pdf_progress_bar.progress(pdf_progress)
+                pdf_status_text.text(f"Creating PDF for SKU: {sku} ({current_operation}/{total_operations})")
                 
-                # Create PDF for unidentified pages if any
-                if unidentified_pages:
-                    writer = PdfWriter()
-                    for idx in unidentified_pages:
-                        writer.add_page(reader.pages[idx])
-                    
-                    buffer = io.BytesIO()
-                    writer.write(buffer)
-                    zipf.writestr("unidentified_pages.pdf", buffer.getvalue())
-                    
-                    current_operation += 1
-                    pdf_progress.progress(current_operation / total_operations)
+                writer = PdfWriter()
+                for idx in page_indices:
+                    writer.add_page(reader.pages[idx])
+                
+                buffer = io.BytesIO()
+                writer.write(buffer)
+                zipf.writestr(f"{sku}.pdf", buffer.getvalue())
+                
+                # Small delay to make progress visible
+                time.sleep(0.1)
             
-            # Clear progress bar
-            pdf_progress.empty()
-            
-            # Download button
-            st.download_button(
-                label="📦 Download All PDFs as ZIP",
-                data=output_zip.getvalue(),
-                file_name=f"sku_split_{uploaded_pdf.name.replace('.pdf', '')}.zip",
-                mime="application/zip",
-                help="Download a ZIP file containing separate PDFs for each SKU"
-            )
-            
-            st.markdown("---")
-            st.markdown("🎉 **Success!** Your PDFs have been split by SKU and are ready for download.")
-            
-        except Exception as e:
-            st.error(f"❌ An error occurred while processing the PDF: {str(e)}")
-            st.markdown("Please check that:")
-            st.markdown("- The uploaded file is a valid PDF")
-            st.markdown("- The PDF contains the expected SKU format")
-            st.markdown("- The file is not corrupted or password-protected")
+            # Create PDF for unidentified pages if any
+            if unidentified_pages:
+                current_operation += 1
+                pdf_progress = current_operation / total_operations
+                pdf_progress_bar.progress(pdf_progress)
+                pdf_status_text.text(f"Creating PDF for unidentified pages ({current_operation}/{total_operations})")
+                
+                writer = PdfWriter()
+                for idx in unidentified_pages:
+                    writer.add_page(reader.pages[idx])
+                
+                buffer = io.BytesIO()
+                writer.write(buffer)
+                zipf.writestr("unidentified_pages.pdf", buffer.getvalue())
+                
+                time.sleep(0.1)
+        
+        # Complete the PDF creation progress
+        pdf_progress_bar.progress(1.0)
+        pdf_status_text.text("✅ All PDFs created successfully!")
+        
+        # Download button
+        st.download_button(
+            label="📦 Download All PDFs as ZIP",
+            data=output_zip.getvalue(),
+            file_name=f"sku_split_{uploaded_pdf.name.replace('.pdf', '')}.zip",
+            mime="application/zip",
+            help="Download a ZIP file containing separate PDFs for each SKU"
+        )
+        
+        st.markdown("---")
+        st.markdown("🎉 **Success!** Your PDFs have been split by SKU and are ready for download.")
+        
+    except Exception as e:
+        st.error(f"❌ An error occurred while processing the PDF: {str(e)}")
+        st.markdown("Please check that:")
+        st.markdown("- The uploaded file is a valid PDF")
+        st.markdown("- The PDF contains the expected SKU format")
+        st.markdown("- The file is not corrupted or password-protected")
 
 else:
     st.info("👆 Upload your PDF file to begin splitting by SKU")
