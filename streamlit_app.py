@@ -57,3 +57,72 @@ if unidentified_pages:
         writer.write(f_out)
 
 print("✅ Done! All SKU-based PDFs generated.")
+# Required: streamlit, PyPDF2, pdfplumber
+
+import streamlit as st
+import pdfplumber
+from PyPDF2 import PdfReader, PdfWriter
+from collections import defaultdict
+import io
+import zipfile
+
+st.set_page_config(page_title="SKU-wise PDF Splitter", layout="centered")
+st.title("📦 Split Order Labels by SKU")
+
+uploaded_pdf = st.file_uploader("Upload the Meesho Label PDF", type=["pdf"])
+
+if uploaded_pdf:
+    sku_bbox = (17, 327, 73, 342)  # (x0, top, x1, bottom)
+    sku_to_pages = defaultdict(list)
+    unidentified_pages = []
+    last_valid_sku = None
+
+    pdf_bytes = uploaded_pdf.read()
+    pdf_stream = io.BytesIO(pdf_bytes)
+
+    with pdfplumber.open(pdf_stream) as pdf:
+        for i, page in enumerate(pdf.pages):
+            words = page.extract_words()
+            sku_candidates = [
+                word['text'] for word in words
+                if sku_bbox[0] <= word['x0'] <= sku_bbox[2] and
+                   sku_bbox[1] <= word['top'] <= sku_bbox[3]
+            ]
+            if sku_candidates and len(sku_candidates[0]) >= 4:
+                sku = sku_candidates[0]
+                sku_to_pages[sku].append(i)
+                last_valid_sku = sku
+            else:
+                if last_valid_sku:
+                    sku_to_pages[last_valid_sku].append(i)
+                else:
+                    unidentified_pages.append(i)
+
+    pdf_stream.seek(0)
+    reader = PdfReader(pdf_stream)
+    output_zip = io.BytesIO()
+
+    with zipfile.ZipFile(output_zip, "w") as zipf:
+        for sku, page_indices in sku_to_pages.items():
+            writer = PdfWriter()
+            for idx in page_indices:
+                writer.add_page(reader.pages[idx])
+            buffer = io.BytesIO()
+            writer.write(buffer)
+            zipf.writestr(f"{sku}.pdf", buffer.getvalue())
+
+        if unidentified_pages:
+            writer = PdfWriter()
+            for idx in unidentified_pages:
+                writer.add_page(reader.pages[idx])
+            buffer = io.BytesIO()
+            writer.write(buffer)
+            zipf.writestr("unidentified_pages.pdf", buffer.getvalue())
+
+    st.success("✅ Splitting complete!")
+    st.download_button(
+        label="Download All PDFs as ZIP",
+        data=output_zip.getvalue(),
+        file_name="sku_split_output.zip",
+        mime="application/zip"
+    )
