@@ -115,13 +115,6 @@ if uploaded_pdf is not None:
             with col2:
                 st.metric("Unidentified Pages", len(unidentified_pages))
             
-            # Show SKU breakdown
-            if sku_to_pages:
-                st.subheader("📊 SKU Breakdown")
-                for sku, pages in sku_to_pages.items():
-                    page_numbers = [p + 1 for p in pages]  # Convert to 1-based indexing
-                    st.write(f"**{sku}**: {len(pages)} pages ({', '.join(map(str, page_numbers))})")
-            
             # Create ZIP file with split PDFs
             st.subheader("📥 Download Split PDFs")
             
@@ -170,25 +163,7 @@ if uploaded_pdf is not None:
             st.markdown("- The file is not corrupted or password-protected")
 
 else:
-    # Landing page content
-    st.markdown("---")
-    st.markdown("### 🚀 Ready to get started?")
-    st.markdown("Upload your Meesho order labels PDF above to automatically split it by SKU codes.")
-    
-    # Feature highlights
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("**🎯 Accurate**")
-        st.markdown("Precisely identifies SKUs using coordinate-based extraction")
-    
-    with col2:
-        st.markdown("**⚡ Fast**")
-        st.markdown("Processes large PDFs quickly and efficiently")
-    
-    with col3:
-        st.markdown("**📦 Organized**")
-        st.markdown("Downloads as a convenient ZIP file with separate PDFs")
+    st.info("👆 Upload your PDF file to begin splitting by SKU")
 
 # Footer
 st.markdown("---")
